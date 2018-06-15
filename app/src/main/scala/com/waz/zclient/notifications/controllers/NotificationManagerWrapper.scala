@@ -29,12 +29,13 @@ import android.text.{SpannableString, Spanned}
 import com.waz.ZLog.ImplicitTag.implicitLogTag
 import com.waz.ZLog.warn
 import com.waz.model.{ConvId, UserId}
+import com.waz.utils.events.EventContext
 import com.waz.utils.returning
 import com.waz.utils.wrappers.Bitmap
 import com.waz.zclient.Intents.{CallIntent, QuickReplyIntent}
 import com.waz.zclient.utils.ContextUtils.getString
 import com.waz.zclient.utils.ResString
-import com.waz.zclient.{Intents, R}
+import com.waz.zclient.{Injectable, Injector, Intents, R}
 import com.waz.zms.NotificationsAndroidService
 
 case class Span(style: Int, range: Int, offset: Int = 0)
@@ -259,14 +260,18 @@ case class NotificationProps(when:                     Option[Long] = None,
 }
 
 trait NotificationManagerWrapper {
-  def cancel(id: Int): Unit
   def getActiveNotificationIds: Seq[Int]
-  def notify(id: Int, props: NotificationProps)(implicit ctx: Context): Unit
 }
 
 object NotificationManagerWrapper {
-  class AndroidNotificationsManager(notificationManager: NotificationManager) extends NotificationManagerWrapper {
-    override def cancel(id: Int): Unit = notificationManager.cancel(id)
+  class AndroidNotificationsManager(notificationManager: NotificationManager)
+                                   (implicit inj: Injector, cxt: Context, eventContext: EventContext)
+    extends NotificationManagerWrapper with Injectable {
+
+    private val controller = inject[MessageNotificationsController]
+
+    controller.notificationToCancel.onUi(notificationManager.cancel)
+    controller.notificationToBuild.onUi { case (id, props) => notificationManager.notify(id, props.build) }
 
     override def getActiveNotificationIds: Seq[Int] =
       if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M)
@@ -276,8 +281,6 @@ object NotificationManagerWrapper {
         Seq.empty
       }
 
-    override def notify(id: Int, props: NotificationProps)(implicit ctx: Context): Unit =
-      notificationManager.notify(id, props.build)
   }
 }
 

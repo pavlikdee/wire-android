@@ -296,7 +296,7 @@ class WireApplication extends MultiDexApplication with WireContext with Injectab
   def ensureInitialized() = {
     ZMessaging.onCreate(this)
 
-    inject[MessageNotificationsController]
+    inject[NotificationManagerWrapper]
     inject[ImageNotificationsController]
     inject[CallingNotificationsController]
 

@@ -38,7 +38,7 @@ import com.waz.service.{AccountsService, UiLifeCycle}
 import com.waz.threading.{CancellableFuture, Threading}
 import com.waz.ui.MemoryImageCache.BitmapRequest
 import com.waz.utils._
-import com.waz.utils.events.{EventContext, Signal}
+import com.waz.utils.events.{EventContext, EventStream, Signal}
 import com.waz.utils.wrappers.Bitmap
 import com.waz.zclient.WireApplication.{AccountToAssetsStorage, AccountToImageLoader}
 import com.waz.zclient._
@@ -70,7 +70,8 @@ class MessageNotificationsController(bundleEnabled: Boolean = Build.VERSION.SDK_
   private lazy val userStorage           = inject[Signal[UsersStorage]]
   private lazy val teamsStorage          = inject[TeamsStorage]
 
-  private val notManager                 = inject[NotificationManagerWrapper]
+  val notificationToCancel = EventStream[Int]()
+  val notificationToBuild  = EventStream[(Int, NotificationProps)]()
 
   private var accentColors = Map[UserId, Int]()
 
@@ -78,22 +79,25 @@ class MessageNotificationsController(bundleEnabled: Boolean = Build.VERSION.SDK_
     accentColors = cs.map { case (userId, color) => userId -> color.getColor }
   }
 
-  notificationsService.groupedNotifications.onUi { notifications =>
-    notifications.toSeq.sortBy(_._1.str.hashCode).foreach {
-      case (userId, (shouldBeSilent, nots)) =>
-        verbose(s"bundleEnabled: $bundleEnabled")
-        verbose(s"notifications received: ${nots.map(n => (n.id, n.message, n.convId, n.userName))}")
-        for {
-          userStorage  <- userStorage.head
-          user         <- userStorage.optSignal(userId).head
-          team         <- user.flatMap(_.teamId) match {
-            case Some(teamId) => teamsStorage.get(teamId)
-            case _            => Future.successful(Option.empty[TeamData])
-          }
-          _ = createConvNotifications(userId, shouldBeSilent, nots, team.map(_.name))
-        } yield ()
-    }
-  }
+  private def fetchTeamName(storage: UsersStorage, userId: UserId) =
+    for {
+      user  <- storage.optSignal(userId)
+      team  <- user.flatMap(_.teamId) match  {
+        case Some(teamId) => teamsStorage.optSignal(teamId)
+        case _            => Signal.const(Option.empty[TeamData])
+      }
+    } yield userId -> team.map(_.name)
+
+  (for {
+    userStorage   <- userStorage
+    notifications <- notificationsService.groupedNotifications.map(_.toSeq.sortBy(_._1.str.hashCode))
+    tn            <- Signal.sequence(notifications.map { case (userId, _) => fetchTeamName(userStorage, userId) }: _*)
+    teamNames     =  tn.toMap
+  } yield notifications.map {
+    case (userId, (shouldBeSilent, nots)) => (userId, shouldBeSilent, nots, teamNames(userId))
+  }).onUi(_.foreach {
+    case (userId, shouldBeSilent, nots, teamName) => createConvNotifications(userId, shouldBeSilent, nots, teamName)
+  })
 
   private val conversationsBeingDisplayed: Signal[Map[UserId, Set[ConvId]]] = for {
     selfId   <- selfId
@@ -118,7 +122,7 @@ class MessageNotificationsController(bundleEnabled: Boolean = Build.VERSION.SDK_
 
     displayed.foreach {
       case (userId, convIds) =>
-        convIds.foreach { convId => notManager.cancel(toNotificationConvId(userId, convId)) }
+        convIds.foreach { convId => notificationToCancel ! toNotificationConvId(userId, convId) }
     }
 
   }
@@ -165,42 +169,37 @@ class MessageNotificationsController(bundleEnabled: Boolean = Build.VERSION.SDK_
     )
 
   private def createConvNotifications(userId: UserId, silent: Boolean, nots: Seq[NotificationInfo], teamName: Option[String]): Unit =
-    if (nots.isEmpty) Future.successful(notManager.cancel(toNotificationGroupId(userId)))
+    if (nots.isEmpty) notificationToCancel ! toNotificationGroupId(userId)
     else {
-      verbose(s"bundleEnabled: $bundleEnabled")
       val groupedConvs =
         if (bundleEnabled)
-          nots.groupBy(_.convId).map {
-            case (convId, ns) => toNotificationConvId(userId, convId) -> ns
-          }
-        else Map(toNotificationGroupId(userId) -> nots)
-
-      verbose(s"groupedConvs = $groupedConvs")
-
-      val teamNameOpt = if (groupedConvs.keys.size > 1) None else teamName
+          nots.groupBy(_.convId).map { case (convId, ns) => toNotificationConvId(userId, convId) -> ns }
+        else
+          Map(toNotificationGroupId(userId) -> nots)
 
       if (bundleEnabled) {
         val notIdSet = groupedConvs.keys.toSet
-        notManager.getActiveNotificationIds
+        inject[NotificationManagerWrapper].getActiveNotificationIds
           .collect { case id if !notIdSet.contains(id) => id }
-          .foreach(notManager.cancel)
+          .foreach(notificationToCancel ! _)
 
         val summaryId = toNotificationGroupId(userId)
-        if (notIdSet.contains(summaryId)) notManager.cancel(summaryId)
+        if (notIdSet.contains(summaryId)) notificationToCancel ! summaryId
 
         val summary = createSummaryNotificationProps(userId, silent, nots, teamName)
         verbose(s"summary: $summary")
-        notManager.notify(summaryId, summary)
+        notificationToBuild ! (summaryId, summary)
       }
+
+      val teamNameOpt = if (groupedConvs.keys.size > 1) None else teamName
 
       val notFutures = groupedConvs.map { case (notId, ns) =>
         getPictureForNotifications(userId, ns).map { pic =>
-          val commonProps = commonNotificationProperties(ns, userId, silent, pic)
-          val specificProps = if (ns.size == 1)
-            singleNotificationProperties(commonProps, userId, ns.head, teamNameOpt)
-          else
-            multipleNotificationProperties(commonProps, userId, ns, teamNameOpt)
-          verbose(s"creating props in the future: $specificProps for ${ns.map(_.id)}")
+          val commonProps   = commonNotificationProperties(ns, userId, silent, pic)
+          val specificProps =
+            if (ns.size == 1) singleNotificationProperties(commonProps, userId, ns.head, teamNameOpt)
+            else              multipleNotificationProperties(commonProps, userId, ns, teamNameOpt)
+
           notId -> (specificProps, ns.map(_.id))
         }
       }
@@ -208,14 +207,13 @@ class MessageNotificationsController(bundleEnabled: Boolean = Build.VERSION.SDK_
       Future.sequence(notFutures).foreach {
         _.foreach { case (notId, (props, notsToCancel)) =>
           verbose(s"notifying about props: $notId -> $props")
-          notManager.notify(notId, props)
+          notificationToBuild ! (notId, props)
           notificationsService.markAsDisplayed(userId, notsToCancel)
         }
       }(Threading.Ui)
     }
 
   private def singleNotificationProperties(props: NotificationProps, userId: UserId, n: NotificationInfo, teamName: Option[String]): NotificationProps = {
-    verbose("getSingleMessageNotification")
     val title        = SpannableWrapper(getMessageTitle(n, None), List(Span(Span.StyleSpanBold, Span.HeaderRange)))
     val body         = getMessage(n, singleConversationInBatch = true)
     val requestBase  = System.currentTimeMillis.toInt
@@ -238,7 +236,6 @@ class MessageNotificationsController(bundleEnabled: Boolean = Build.VERSION.SDK_
   }
 
   private def multipleNotificationProperties(props: NotificationProps, userId: UserId, ns: Seq[NotificationInfo], teamName: Option[String]): NotificationProps = {
-    verbose("getMultipleMessagesNotification")
     val convIds = ns.map(_.convId).toSet
     val isSingleConv = convIds.size == 1
 
@@ -302,13 +299,11 @@ class MessageNotificationsController(bundleEnabled: Boolean = Build.VERSION.SDK_
     getSelectedSoundUri(value, defaultResId, defaultResId)
 
   private def getSelectedSoundUri(value: String, @RawRes preferenceDefault: Int, @RawRes returnDefault: Int): Uri = {
-    verbose(s"getSelectedSoundUri($value, $preferenceDefault, $returnDefault")
     if (!TextUtils.isEmpty(value) && !RingtoneUtils.isDefaultValue(cxt, value, preferenceDefault)) Uri.parse(value)
     else RingtoneUtils.getUriForRawId(cxt, returnDefault)
   }
 
   private def commonNotificationProperties(ns: Seq[NotificationInfo], userId: UserId, silent: Boolean, pic: Option[Bitmap]) = {
-    verbose(s"commonNotificationProperties")
     val color = notificationColor(userId)
     NotificationProps(
       showWhen      = Some(true),
@@ -340,7 +335,6 @@ class MessageNotificationsController(bundleEnabled: Boolean = Build.VERSION.SDK_
   }
 
   private[notifications] def getMessage(n: NotificationInfo, singleConversationInBatch: Boolean): SpannableWrapper = {
-    verbose(s"getMessage")
     val message = n.message.replaceAll("\\r\\n|\\r|\\n", " ")
     val header  = n.tpe match {
       case CONNECT_ACCEPTED => ResString.Empty

@@ -19,7 +19,6 @@ package com.waz.zclient.notifications.controllers
 
 import java.util.concurrent.TimeUnit
 
-import android.content.Context
 import com.waz.api.IConversation
 import com.waz.api.NotificationsHandler.NotificationType
 import com.waz.api.impl.AccentColor
@@ -74,23 +73,16 @@ class MessageNotificationsControllerTest extends AndroidFreeSpec { this: Suite =
       })
   }
 
-  val notsInManager = new SourceSignal[Map[Int, NotificationProps]]()
+  private val notsInManager = new SourceSignal[Map[Int, NotificationProps]]()
 
   class NewModule extends Module {
 
     private val notificationManager = new NotificationManagerWrapper {
 
-      override def cancel(id: Int): Unit = {
-        notsInManager ! notsInManager.currentValue.getOrElse(Map.empty).filterKeys(_ != id)
-      }
-
       override def getActiveNotificationIds: Seq[Int] = {
         notsInManager.currentValue.getOrElse(Map.empty).keys.toSeq
       }
 
-      override def notify(id: Int, props: NotificationProps)(implicit ctx: Context): Unit = {
-        notsInManager ! (notsInManager.currentValue.getOrElse(Map.empty) + (id -> props))
-      }
     }
 
     private val uiLifeCycle = returning(mock[UiLifeCycle]) { uiLifeCycle =>
@@ -111,10 +103,6 @@ class MessageNotificationsControllerTest extends AndroidFreeSpec { this: Suite =
     private val convsStats = returning(mock[ConversationsListStateService]) { convsStats =>
       (convsStats.selectedConversationId _).expects().anyNumberOfTimes().returning(Signal.const(Some(convId)))
       (convsStats.selectConversation _).expects(Some(convId)).anyNumberOfTimes().returning(Future.successful(()))
-    }
-
-    private val convsUi = returning(mock[ConversationsUiService]) { convsUi =>
-      (convsUi.setConversationArchived _).expects(convId, false).anyNumberOfTimes().returning(Future.successful(Option(convData)))
     }
 
     private val conversations = returning(mock[ConversationsService]) { conversations =>
@@ -185,12 +173,12 @@ class MessageNotificationsControllerTest extends AndroidFreeSpec { this: Suite =
                         convName: String = "user1",
                         isEphemeral: Boolean = false,
                         notificationType: NotificationType = NotificationType.TEXT
-                       ): NotificationInfo = {
+                       ) =
     NotificationInfo(
       NotId(Uid().str), notificationType, Instant.now(), text, convId, Some(userName),
       Some(convName), userPicture = None, isEphemeral = isEphemeral, hasBeenDisplayed = false
     )
-  }
+
 
   private def sendInfos(ns: Seq[NotificationInfo], userId: UserId = userId): Unit =
     globalNotifications.groupedNotifications ! Map(userId -> (true, ns))
@@ -198,11 +186,13 @@ class MessageNotificationsControllerTest extends AndroidFreeSpec { this: Suite =
   private def sendInfo(info: NotificationInfo, userId: UserId = userId): Unit =
     globalNotifications.groupedNotifications ! Map(userId -> (true, Seq(info)))
 
-  private def waitForProps(filter: Map[Int, NotificationProps] => Boolean): Map[Int, NotificationProps] =
+  private def waitForProps(filter: Map[Int, NotificationProps] => Boolean) =
     Await.result(notsInManager.filter(filter).head, timeout)
 
-  private def waitForOne(filter: NotificationProps => Boolean = (_ => true)): NotificationProps =
+  private def waitForOne(filter: NotificationProps => Boolean = _ => true) =
     waitForProps(map => { map.size == 1 && filter(map.head._2) }).head._2
+
+  private var controller: MessageNotificationsController = _
 
   // TODO: check why 'beforeAll' is not called automatically
   private def setup(bundleEnabled: Boolean = false): Unit = {
@@ -212,7 +202,15 @@ class MessageNotificationsControllerTest extends AndroidFreeSpec { this: Suite =
     notsInManager ! Map.empty
     waitForProps(_.isEmpty)
 
-    new MessageNotificationsController(bundleEnabled = bundleEnabled, applicationId = "")
+    controller = new MessageNotificationsController(bundleEnabled = bundleEnabled, applicationId = "")
+
+    controller.notificationToCancel.onUi { id =>
+      notsInManager ! notsInManager.currentValue.getOrElse(Map.empty).filterKeys(_ != id)
+    }
+
+    controller.notificationToBuild.onUi { case (id, props) =>
+      notsInManager ! (notsInManager.currentValue.getOrElse(Map.empty) + (id -> props))
+    }
   }
 
   @Test
