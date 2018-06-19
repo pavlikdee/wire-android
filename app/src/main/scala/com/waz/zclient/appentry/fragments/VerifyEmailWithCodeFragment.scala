@@ -187,7 +187,7 @@ class VerifyEmailWithCodeFragment extends FragmentHelper with View.OnClickListen
               R.string.receive_news_and_offers_request_body,
               R.string.app_entry_dialog_privacy_policy,
               R.string.app_entry_dialog_accept,
-              R.string.app_entry_dialog_not_now
+              R.string.app_entry_dialog_no_thanks
             )).map { consent =>
             am.setMarketingConsent(consent)
             if (consent.isEmpty) inject[BrowserController].openUrl(getString(R.string.url_privacy_policy))

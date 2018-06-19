@@ -1290,6 +1290,7 @@
 
     <string name="app_entry_dialog_accept">ACCEPT</string>
     <string name="app_entry_dialog_cancel">CANCEL</string>
+    <string name="app_entry_dialog_no_thanks">NO, thanks</string>
     <string name="app_entry_dialog_not_now">NOT NOW</string>
     <string name="app_entry_dialog_view">VIEW</string>
     <string name="app_entry_dialog_privacy_policy">PRIVACY POLICY</string>
