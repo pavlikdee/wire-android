@@ -45,7 +45,7 @@ import com.waz.zclient.ui.utils.TextViewUtils
 import com.waz.zclient.utils.ContextUtils._
 import com.waz.zclient.utils._
 import com.waz.zclient.views.LoadingIndicatorView
-import com.waz.znet.Response.Status
+import com.waz.znet2.http.ResponseCode
 
 import scala.concurrent.Future
 
@@ -296,7 +296,7 @@ class SetOrRequestPasswordFragment extends CredentialsFragment {
           } yield resp match {
             case Right(_) => activity.startFirstFragment()
             case Left(err) =>
-              if (err.code == Status.Forbidden) {
+              if (err.code == ResponseCode.Forbidden) {
                 accounts.logout(am.userId).map(_ => activity.startFirstFragment())
               } else showError(err)
           }

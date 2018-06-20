@@ -33,14 +33,11 @@ import com.waz.ZLog.ImplicitTag._
 import com.waz.ZLog.warn
 import com.waz.model.Handle
 import com.waz.service.ZMessaging
-import com.waz.sync.client.HandlesClient
 import com.waz.threading.Threading
 import com.waz.utils.events.Signal
 import com.waz.utils.returning
 import com.waz.zclient.views.LoadingIndicatorView
 import com.waz.zclient.{FragmentHelper, R}
-import com.waz.znet.Response.{HttpStatus, Status, SuccessHttpStatus}
-import com.waz.znet.{Request, Response}
 
 import scala.util.Try
 
@@ -88,15 +85,13 @@ class ChangeHandleFragment extends DialogFragment with FragmentHelper {
               z         <- zms.head
               curHandle <- currentHandle.head
               if !curHandle.map(_.string).contains(normalText)
-              _ <- z.zNetClient.withErrorHandling("isUsernameAvailable", Request.Head(HandlesClient.checkSingleAvailabilityPath + normalText)) {
-                case Response(SuccessHttpStatus(), _, _) =>
-                  setErrorMessage(AlreadyTaken)
-                  okButton.setEnabled(false)
-
-                case Response(HttpStatus(Status.NotFound, _), _, _) =>
+              _ <- z.handlesClient.isUserHandleAvailable(Handle(normalText)).map {
+                case Right(true) =>
                   setErrorMessage("")
                   okButton.setEnabled(editingEnabled)
-
+                case Right(false) =>
+                  setErrorMessage(AlreadyTaken)
+                  okButton.setEnabled(false)
                 case _ =>
                   setErrorMessage(R.string.pref__account_action__dialog__change_username__error_unknown)
                   enableEditing()

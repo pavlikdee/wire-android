@@ -38,7 +38,7 @@ import com.waz.zclient.common.controllers.global.PasswordController
 import com.waz.zclient.pages.main.profile.validator.{EmailValidator, PasswordValidator}
 import com.waz.zclient.utils.RichView
 import com.waz.zclient.{FragmentHelper, R}
-import com.waz.znet.ZNetClient.ErrorOr
+import com.waz.sync.client.ErrorOr
 
 import scala.util.Try
 
